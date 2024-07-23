@@ -33,11 +33,6 @@ class NetworkTool(Gtk.Application):
         self.logger.setLevel(logging.INFO)
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
         
-        # File handler
-        file_handler = logging.FileHandler('network_tool.log')
-        file_handler.setFormatter(formatter)
-        self.logger.addHandler(file_handler)
-        
         # Console handler
         console_handler = logging.StreamHandler()
         console_handler.setFormatter(formatter)
