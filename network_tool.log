@@ -114,3 +114,7 @@
 2024-07-23 22:40:16,086 - INFO - Network restored to normal state.
 2024-07-23 23:29:42,129 - INFO - Starting ARP spoofing...
 2024-07-23 23:29:42,241 - INFO - Gateway MAC: e0:a3:ac:52:ab:86
+2024-07-23 23:40:37,857 - INFO - Scanning network...
+2024-07-23 23:40:40,905 - INFO - ARP scan completed. Found 0 devices.
+2024-07-23 23:40:49,983 - INFO - Ping scan completed. Found 3 devices.
+2024-07-23 23:40:49,984 - INFO - Scan completed. Found 3 devices.
