@@ -27,8 +27,8 @@ class NetworkTool(Adw.Application):
         self.gateway_ip = self.get_default_gateway()
         self.log_message(f"Network set to: {self.network}", logging.DEBUG)
         self.log_message(f"Gateway IP set to: {self.gateway_ip}", logging.DEBUG)
-        self.thread_count = 30  # Default thread count
-        self.original_thread_count = self.thread_count  # Store the original value
+        self.thread_count = 30
+        self.original_thread_count = self.thread_count
 
     def setup_logging(self):
         self.logger = logging.getLogger('NetworkTool')
@@ -99,21 +99,38 @@ class NetworkTool(Adw.Application):
         menu_button.set_icon_name("open-menu-symbolic")
         header.pack_end(menu_button)
 
-        # Create menu model
-        menu = Gio.Menu()
-        menu.append("Preferences", "app.preferences")
-        menu.append("About", "app.about")
-        menu_button.set_menu_model(menu)
+        # Create a popover for the menu
+        self.popover = Gtk.Popover()
+        menu_button.set_popover(self.popover)
 
-        # Add preferences action
-        preferences_action = Gio.SimpleAction.new("preferences", None)
-        preferences_action.connect("activate", self.on_preferences_clicked)
-        self.add_action(preferences_action)
+        # Create a box for the popover content
+        popover_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        popover_box.set_margin_top(6)
+        popover_box.set_margin_bottom(6)
+        popover_box.set_margin_start(6)
+        popover_box.set_margin_end(6)
+        self.popover.set_child(popover_box)
 
-        # Add about action
-        about_action = Gio.SimpleAction.new("about", None)
-        about_action.connect("activate", self.on_about_clicked)
-        self.add_action(about_action)
+        # Add thread count spin button to the popover
+        thread_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        thread_label = Gtk.Label(label="Thread Count")
+        thread_box.append(thread_label)
+
+        adjustment = Gtk.Adjustment(value=self.thread_count, lower=1, upper=100, step_increment=1, page_increment=10)
+        self.thread_entry = Gtk.SpinButton()
+        self.thread_entry.set_adjustment(adjustment)
+        self.thread_entry.connect("value-changed", self.on_thread_count_changed)
+        thread_box.append(self.thread_entry)
+
+        popover_box.append(thread_box)
+
+        # Add a separator
+        popover_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        # Add About button
+        about_button = Gtk.Button(label="About")
+        about_button.connect("clicked", self.on_about_clicked)
+        popover_box.append(about_button)
 
         # Create a content area
         self.content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=24, margin_bottom=24, margin_start=12, margin_end=12)
@@ -128,6 +145,9 @@ class NetworkTool(Adw.Application):
 
         self.gateway_row = Adw.ActionRow(title="Gateway")
         network_box.add(self.gateway_row)
+
+        # Update network labels
+        self.update_network_label()
 
         # Device list
         device_box = Adw.PreferencesGroup(title="Devices")
@@ -177,84 +197,6 @@ class NetworkTool(Adw.Application):
         # Start initial scan
         self.start_scan()
 
-    def on_preferences_clicked(self, action, param):
-        preferences = Adw.PreferencesWindow(transient_for=self.window, title="Preferences")
-        
-        general_page = Adw.PreferencesPage()
-        general_page.set_title("General")
-        general_page.set_icon_name("preferences-system-symbolic")
-        preferences.add(general_page)
-
-        scanning_group = Adw.PreferencesGroup()
-        scanning_group.set_title("Scanning")
-        general_page.add(scanning_group)
-
-        thread_row = Adw.ActionRow()
-        thread_row.set_title("Thread Count")
-        thread_row.set_subtitle("Number of threads to use for scanning")
-
-        adjustment = Gtk.Adjustment(value=self.thread_count, lower=1, upper=100, step_increment=1, page_increment=10)
-        self.spin_button = Gtk.SpinButton()
-        self.spin_button.set_adjustment(adjustment)
-        thread_row.add_suffix(self.spin_button)
-        scanning_group.add(thread_row)
-
-        # Add action bar for save and reset buttons
-        action_bar = Gtk.ActionBar()
-        action_bar.set_revealed(True)
-
-        save_button = Gtk.Button(label="Save")
-        save_button.connect("clicked", self.on_save_preferences)
-        action_bar.pack_end(save_button)
-
-        reset_button = Gtk.Button(label="Reset")
-        reset_button.connect("clicked", self.on_reset_preferences)
-        action_bar.pack_end(reset_button)
-
-        # Create a box to hold the preferences page and action bar
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        box.append(general_page)
-        box.append(action_bar)
-
-        preferences.set_content(box)
-        preferences.present()
-
-    def on_save_preferences(self, button):
-        self.thread_count = self.spin_button.get_value_as_int()
-        self.original_thread_count = self.thread_count
-        self.log_message(f"Preferences saved. Thread count: {self.thread_count}")
-        button.get_root().destroy()  # Close the preferences window
-
-    def on_reset_preferences(self, button):
-        self.spin_button.set_value(self.original_thread_count)
-        self.log_message("Preferences reset to original values")
-
-    def on_about_clicked(self, action, parameter):
-        about_dialog = Gtk.AboutDialog()
-        about_dialog.set_transient_for(self.window)
-        about_dialog.set_modal(True)
-
-        about_dialog.set_program_name("Network Tool")
-        about_dialog.set_version("1.0")
-        about_dialog.set_copyright("© 2023 Your Name")
-        about_dialog.set_comments("A network scanning and ARP spoofing tool.")
-        about_dialog.set_website("https://example.com")
-        about_dialog.set_website_label("Website")
-        about_dialog.set_authors(["Your Name"])
-        about_dialog.set_documenters(["Your Name"])
-        about_dialog.set_artists(["Your Name"])
-        about_dialog.set_license_type(Gtk.License.GPL_3_0)
-
-        # You can set a logo if you have one
-        # logo = Gtk.Image.new_from_file("path/to/your/logo.png")
-        # about_dialog.set_logo(logo.get_paintable())
-
-        about_dialog.connect("close-request", self.on_about_dialog_close)
-        about_dialog.present()
-
-    def on_about_dialog_close(self, dialog):
-        dialog.destroy()
-
     def update_network_label(self):
         self.network_row.set_subtitle(self.network)
         self.gateway_row.set_subtitle(self.gateway_ip)
@@ -262,6 +204,11 @@ class NetworkTool(Adw.Application):
     def update_status_label(self, message):
         if hasattr(self, 'status_label'):
             self.status_label.set_text(f"Status: {message}")
+
+    def on_thread_count_changed(self, spin_button):
+        self.thread_count = spin_button.get_value_as_int()
+        self.log_message(f"Thread count set to {self.thread_count}")
+        self.popover.popdown()  # Close the popover after changing the thread count
 
     def start_scan(self):
         if not self.is_scanning and self.network:
@@ -530,6 +477,29 @@ class NetworkTool(Adw.Application):
             self.log_message("Network restored to normal state.")
         except Exception as e:
             self.log_message(f"Error restoring network: {str(e)}", logging.ERROR)
+
+    def on_about_clicked(self, button):
+        self.popover.popdown()  # Close the popover before opening the About dialog
+        about_dialog = Gtk.AboutDialog()
+        about_dialog.set_transient_for(self.window)
+        about_dialog.set_modal(True)
+
+        about_dialog.set_program_name("Network Tool")
+        about_dialog.set_version("1.0")
+        about_dialog.set_copyright("© 2023 Your Name")
+        about_dialog.set_comments("A network scanning and ARP spoofing tool.")
+        about_dialog.set_website("https://example.com")
+        about_dialog.set_website_label("Website")
+        about_dialog.set_authors(["Your Name"])
+        about_dialog.set_documenters(["Your Name"])
+        about_dialog.set_artists(["Your Name"])
+        about_dialog.set_license_type(Gtk.License.GPL_3_0)
+
+        about_dialog.connect("close-request", self.on_about_dialog_close)
+        about_dialog.present()
+
+    def on_about_dialog_close(self, dialog):
+        dialog.destroy()
 
 if __name__ == "__main__":
     app = NetworkTool()
