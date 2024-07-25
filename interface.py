@@ -158,22 +158,20 @@ class NetworkTool(Adw.Application):
 
         # Device list
         self.device_group = Adw.PreferencesGroup()
+        self.content_box.append(self.device_group)
 
-        # Wrap the device group in a scrolled window
-        scrolled_window = Gtk.ScrolledWindow()
-        scrolled_window.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        scrolled_window.set_min_content_height(200)  # Set minimum height for the scrolled window
-        scrolled_window.set_child(self.device_group)
-        self.content_box.append(scrolled_window)
+        # Add header buttons
+        self.header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        
+        self.select_all_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.select_all_switch = Gtk.Switch()
+        self.select_all_switch.set_valign(Gtk.Align.CENTER)
+        self.select_all_switch.connect("notify::active", self.on_select_all_toggled)
+        self.select_all_box.append(Gtk.Label(label="Select All"))
+        self.select_all_box.append(self.select_all_switch)
+        self.header_box.append(self.select_all_box)
 
-        # Add "Check All" checkbox to the group title
-        self.check_all_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self.check_all_button = Gtk.CheckButton(label="Select All")
-        self.check_all_button.connect("toggled", self.on_check_all_toggled)
-        self.check_all_box.append(self.check_all_button)
-
-        self.device_group.set_header_suffix(self.check_all_box)
-        self.check_all_box.set_visible(False)  # Initially hidden
+        self.device_group.set_header_suffix(self.header_box)
 
         # Loading spinner
         self.spinner = Gtk.Spinner()
@@ -252,6 +250,7 @@ class NetworkTool(Adw.Application):
             self.is_scanning = True
             self.spinner.start()
             self.log_message("Scanning network...")
+            self.select_all_box.set_visible(False)  # Hide select all button during scanning
             threading.Thread(target=self.scan_network, daemon=True).start()
         elif not self.network:
             self.log_message("No network detected. Unable to scan.", logging.ERROR)
@@ -267,8 +266,8 @@ class NetworkTool(Adw.Application):
                 self.log_message("ARP scan found no devices. Trying ping scan...", logging.DEBUG)
                 self.ping_scan(new_devices)
 
-            # Update self.devices
-            self.update_devices_list(new_devices)
+            # Update self.devices with only the new devices found
+            self.devices = new_devices
 
             # Update UI on the main thread
             GLib.idle_add(self.update_device_list)
@@ -278,7 +277,9 @@ class NetworkTool(Adw.Application):
             self.log_message(f"Scan completed. Found {len(self.devices)} devices.")
             self.is_scanning = False
             GLib.idle_add(self.spinner.stop)
+            GLib.idle_add(self.select_all_box.set_visible, True)  # Show select all button after scanning
 
+    
     def arp_scan(self, devices):
         try:
             self.log_message(f"Starting ARP scan on network: {self.network}", logging.DEBUG)
@@ -350,155 +351,147 @@ class NetworkTool(Adw.Application):
                 pass
             
             try:
-                # If nmblookup fails or isn't available, try using 'arp -a' to get the MAC address
-                result = subprocess.run(['arp', '-a', ip], capture_output=True, text=True, timeout=1)
-                mac = result.stdout.split()[-1]
-                if ':' in mac or '-' in mac:
-                    # Check if it's an Android device based on MAC address
-                    android_device = self.is_android_mac(mac)
-                    if android_device:
-                        return android_device
-                    return f"Unknown Device ({mac})"
-            except (subprocess.SubprocessError, IndexError):
+                # If nmblookup fails or isn't available, try using 'avahi-resolve' for mDNS resolution
+                result = subprocess.run(['avahi-resolve', '-a', ip], capture_output=True, text=True, timeout=1)
+                if result.returncode == 0:
+                    hostname = result.stdout.strip().split('\t')[1]
+                    return hostname
+            except (subprocess.SubprocessError, IndexError, FileNotFoundError):
                 pass
             
-            # If all else fails, return a generic name
-            return f"Unknown Devices"
-
-    def is_android_mac(self, mac):
-        # Extended list of common Android device manufacturers' MAC prefixes with manufacturer names
-        android_prefixes = {
-            '00:08:22': 'Samsung', '00:18:82': 'Huawei', '00:1E:42': 'Xiaomi', '00:24:E4': 'Sony Mobile', '00:26:E8': 'Oppo',
-            '00:37:6D': 'OnePlus', '00:6B:8E': 'Vivo', '00:9A:CD': 'Lenovo', '00:E0:4C': 'Realme', '0C:37:DC': 'Motorola',
-            '18:F0:E4': 'Google', '28:6C:07': 'LG', '3C:5A:B4': 'Google', '40:4E:36': 'HTC', '44:80:EB': 'Google',
-            '60:21:C0': 'Motorola', '70:3A:CB': 'Google', '88:B4:A6': 'Huawei', 'A4:70:D6': 'Motorola', 'AC:37:43': 'HTC',
-            'D8:55:A3': 'Google', 'F0:79:59': 'Asus', '00:02:C7': 'Motorola', '00:05:C9': 'LG', '00:0D:3A': 'Microsoft',
-            '00:12:47': 'Samsung', '00:15:A0': 'Nokia', '00:17:C9': 'Samsung', '00:1C:A4': 'Sony Ericsson', '00:21:19': 'Samsung',
-            '00:23:39': 'Samsung', '00:25:67': 'Samsung', '00:26:FF': 'BlackBerry', '00:30:66': 'Motorola', '00:3A:9A': 'Cisco',
-            '00:3D:CB': 'Motorola', '00:50:C2': 'Motorola', '00:5F:F9': 'Motorola', '00:6B:9E': 'Vizio', '00:6B:CF': 'Huawei',
-            '00:8C:FA': 'Motorola', '00:90:4C': 'Motorola', '00:A0:96': 'Motorola', '00:B0:52': 'Motorola', '00:BB:3A': 'Amazon',
-            '00:BF:61': 'Samsung', '00:C2:C6': 'Intel', '00:DB:70': 'Apple', '00:E0:91': 'LG', '00:E0:ED': 'Motorola',
-            '04:4B:ED': 'Apple', '04:B1:67': 'Xiaomi', '04:D3:B5': 'Huawei', '04:E5:36': 'Apple', '08:37:3D': 'Samsung',
-            '08:60:6E': 'Apple', '08:62:66': 'Apple', '08:C6:B3': 'Motorola', '0C:96:E6': 'Huawei', '10:2C:6B': 'Huawei',
-            '10:3B:59': 'Samsung', '10:4E:07': 'Nokia', '10:5F:06': 'Huawei', '10:68:3F': 'LG', '10:A5:D0': 'Murata',
-            '10:CE:A9': 'Sony Mobile', '14:1A:A3': 'Motorola', '14:30:C6': 'Motorola', '14:41:E2': 'Motorola', '14:4F:8A': 'Intel',
-            '14:A3:64': 'Samsung', '18:21:95': 'Samsung', '18:34:51': 'Apple', '18:E2:C2': 'Samsung', '1C:21:D1': 'Samsung',
-            '1C:3E:84': 'Motorola', '1C:66:AA': 'Samsung', '1C:77:F6': 'Samsung', '1C:9E:46': 'Apple', '1C:B7:2C': 'ASUSTek',
-            '20:2D:07': 'Samsung', '20:54:76': 'Sony Mobile', '20:64:32': 'Samsung', '20:A6:0C': 'Samsung', '24:09:95': 'Huawei',
-            '24:4B:03': 'Samsung', '24:5A:B5': 'Samsung', '24:DB:ED': 'Samsung', '28:3F:69': 'Sony Mobile', '28:98:7B': 'Samsung',
-            '28:B2:BD': 'Intel', '28:C6:3F': 'Intel', '2C:0E:3D': 'Samsung', '2C:5B:B8': 'Motorola', '2C:A8:35': 'Motorola',
-            '30:07:4D': 'Samsung', '30:19:66': 'Samsung', '30:75:12': 'Sony Mobile', '30:87:30': 'Huawei', '30:96:FB': 'Samsung',
-            '30:F3:35': 'Motorola', '34:14:5F': 'Samsung', '34:23:BA': 'Samsung', '34:2E:B6': 'Motorola', '34:36:3B': 'Apple',
-            '34:80:B3': 'Motorola', '34:BE:00': 'Samsung', '38:0A:94': 'Samsung', '38:26:CD': 'Apple', '38:2D:E8': 'Samsung',
-            '38:78:62': 'Sony Mobile', '38:A4:ED': 'Xiaomi', '38:BC:1A': 'Meizu', '3C:8B:FE': 'Samsung', '3C:91:80': 'Liteon',
-            '3C:A3:48': 'vivo', '3C:B6:B7': 'vivo', '3C:F7:A4': 'Samsung', '40:0E:85': 'Samsung', '40:7C:7D': 'Nokia',
-            '40:88:05': 'Motorola', '40:B8:37': 'Sony Mobile', '40:D3:AE': 'Samsung', '44:65:0D': 'Amazon', '44:78:3E': 'Samsung',
-            '44:A7:CF': 'Murata', '48:01:C5': 'Sony Mobile', '48:2C:EA': 'Motorola', '48:59:29': 'LG', '48:5A:3F': 'Wisol',
-            '48:60:5F': 'LG', '48:88:CA': 'Motorola', '48:DB:50': 'Huawei', '4C:21:D0': 'Sony Mobile', '4C:49:E3': 'Xiaomi',
-            '4C:4E:03': 'TCT mobile', '4C:BC:A5': 'Samsung', '50:01:BB': 'Samsung', '50:2E:5C': 'HTC', '50:55:27': 'LG',
-            '50:8F:4C': 'Xiaomi', '50:A4:C8': 'Samsung', '50:F5:20': 'Samsung', '54:27:58': 'Motorola', '54:35:30': 'Hon Hai',
-            '54:51:1B': 'Huawei', '54:9B:12': 'Samsung', '54:A0:50': 'ASUSTek', '58:A2:B5': 'LG', '5C:0A:5B': 'Samsung',
-            '5C:2E:59': 'Samsung', '5C:51:88': 'Motorola', '5C:A3:9D': 'Samsung', '5C:B5:24': 'Sony Mobile', '5C:C5:69': 'Samsung',
-            '5C:E8:EB': 'Samsung', '60:45:BD': 'Microsoft', '60:6D:C7': 'Hon Hai', '60:A4:D0': 'Samsung', '60:AB:67': 'Xiaomi',
-            '60:BE:B5': 'Motorola', '60:D0:A9': 'Samsung', '60:F1:89': 'Murata', '64:89:9A': 'LG', '64:B4:73': 'Xiaomi',
-            '64:BC:0C': 'LG', '64:CC:2E': 'Xiaomi', '68:05:71': 'Samsung', '68:27:37': 'Samsung', '68:48:98': 'Samsung',
-            '68:C4:4D': 'Motorola', '68:DF:DD': 'Xiaomi', '6C:0E:0D': 'Sony Mobile', '6C:23:B9': 'Sony Mobile', '6C:25:B9': 'BBK',
-            '6C:71:D9': 'Amazon', '6C:AD:F8': 'AzureWave', '70:1A:04': 'Liteon', '70:72:3C': 'Huawei', '70:78:8B': 'vivo',
-            '70:81:EB': 'Apple', '70:9F:2D': 'vivo', '70:C9:4E': 'Liteon', '74:23:44': 'Xiaomi', '74:45:8A': 'Samsung',
-            '74:A5:28': 'Samsung', '74:EB:80': 'Samsung', '78:00:9E': 'Samsung', '78:02:F8': 'Xiaomi', '78:1F:DB': 'Samsung',
-            '78:4B:87': 'Murata', '78:52:1A': 'Samsung', '78:9E:D0': 'Samsung', '78:A5:04': 'Texas Instruments', '78:F8:82': 'LG',
-            '7C:1C:68': 'Samsung', '7C:46:85': 'Motorola', '7C:61:93': 'HTC', '7C:7A:91': 'Intel', '7C:AB:25': 'Motorola',
-            '7C:E9:D3': 'Hon Hai', '80:57:19': 'Samsung', '80:7A:BF': 'HTC', '84:10:0D': 'Motorola', '84:55:A5': 'Samsung',
-            '84:98:66': 'Samsung', '84:B5:41': 'Samsung', '84:CF:BF': 'Fairphone', '88:07:4B': 'LG', '88:30:8A': 'Murata',
-            '88:75:98': 'Samsung', '88:79:7E': 'Motorola', '88:C9:D0': 'LG', '8C:25:05': 'Huawei', '8C:3A:E3': 'LG',
-            '8C:71:F8': 'Samsung', '8C:77:12': 'Samsung', '8C:BE:BE': 'Xiaomi', '90:00:DB': 'Samsung', '90:17:AC': 'Huawei',
-            '90:18:7C': 'Samsung', '90:68:C3': 'Motorola', '90:C1:15': 'Sony Mobile', '94:0E:6B': 'Samsung', '94:8F:EE': 'Verizon',
-            '94:B9:7E': 'Motorola', '94:D0:29': 'Guangdong Oppo', '98:0C:82': 'Samsung', '98:28:A6': 'Compal', '98:52:B1': 'Samsung',
-            '98:6F:60': 'Guangdong Oppo', '98:F1:70': 'vivo', '9C:2E:A1': 'Xiaomi', '9C:3A:AF': 'Samsung', '9C:5C:8E': 'ASUSTek',
-            '9C:8C:6E': 'Samsung', 'A0:08:69': 'Intel', 'A0:10:81': 'Samsung', 'A0:60:90': 'Samsung', 'A0:82:1F': 'Samsung',
-            'A0:86:C6': 'Xiaomi', 'A0:C9:A0': 'Murata', 'A4:08:EA': 'Murata', 'A4:84:31': 'Samsung', 'A4:99:47': 'Huawei',
-            'A8:1B:6A': 'Hon Hai', 'A8:60:B6': 'Apple', 'A8:81:95': 'Samsung', 'A8:96:75': 'Motorola', 'AC:5F:3E': 'Samsung',
-            'AC:9E:17': 'ASUSTek', 'AC:CF:85': 'Huawei', 'B0:35:8D': 'Nokia', 'B0:72:BF': 'Murata', 'B0:E0:3C': 'TCT mobile',
-            'B4:07:F9': 'Samsung', 'B4:3A:28': 'Samsung', 'B4:60:ED': 'Huawei', 'B4:CE:F6': 'HTC', 'B8:5A:73': 'Samsung',
-            'B8:5E:7B': 'Samsung', 'B8:6C:E8': 'Samsung', 'B8:B4:2E': 'Motorola', 'BC:14:85': 'Samsung', 'BC:20:A4': 'Samsung',
-            'BC:44:86': 'Samsung', 'BC:72:B1': 'Samsung', 'BC:76:5E': 'Samsung', 'BC:85:1F': 'Samsung', 'BC:E6:3F': 'Samsung',
-            'C0:11:73': 'Samsung', 'C0:65:99': 'Samsung', 'C0:89:97': 'Samsung', 'C0:BD:D1': 'Samsung', 'C4:42:02': 'Samsung',
-            'C4:50:06': 'Samsung', 'C4:62:EA': 'Samsung', 'C4:73:1E': 'Samsung', 'C4:88:E5': 'Samsung', 'C8:14:79': 'Samsung',
-            'C8:19:F7': 'Samsung', 'C8:38:70': 'Samsung', 'C8:7E:75': 'Samsung', 'CC:07:AB': 'Samsung', 'CC:3A:61': 'Samsung',
-            'CC:F9:E8': 'Samsung', 'D0:17:6A': 'Samsung', 'D0:59:E4': 'Samsung', 'D0:66:7B': 'Samsung', 'D0:87:E2': 'Samsung',
-            'D0:C1:B1': 'Samsung', 'D0:DF:C7': 'Samsung', 'D4:87:D8': 'Samsung', 'D4:88:90': 'Samsung', 'D4:E8:B2': 'Samsung',
-            'D8:08:31': 'Samsung', 'D8:57:EF': 'Samsung', 'D8:90:E8': 'Samsung', 'DC:44:B6': 'Samsung', 'DC:66:72': 'Samsung',
-            'DC:CF:96': 'Samsung', 'E0:99:71': 'Samsung', 'E0:AA:96': 'Samsung', 'E0:CB:EE': 'Samsung', 'E4:12:1D': 'Samsung',
-            'E4:40:E2': 'Samsung', 'E4:58:B8': 'Samsung', 'E4:7C:F9': 'Samsung', 'E4:92:FB': 'Samsung', 'E4:E0:C5': 'Samsung',
-            'E8:03:9A': 'Samsung', 'E8:11:32': 'Samsung', 'E8:3A:12': 'Samsung', 'E8:4E:84': 'Samsung', 'E8:93:09': 'Samsung',
-            'EC:10:7B': 'Samsung', 'EC:1F:72': 'Samsung', 'EC:9B:F3': 'Samsung', 'F0:08:F1': 'Samsung', 'F0:5A:09': 'Samsung',
-            'F0:5B:7B': 'Samsung', 'F0:72:8C': 'Samsung', 'F0:E7:7E': 'Samsung', 'F4:09:D8': 'Samsung', 'F4:42:8F': 'Samsung',
-            'F4:7B:5E': 'Samsung', 'F4:9F:54': 'Samsung', 'F8:04:2E': 'Samsung', 'F8:3F:51': 'Samsung', 'F8:77:B8': 'Samsung',
-            'F8:D0:BD': 'Samsung', 'FC:00:12': 'Toshiba', 'FC:19:10': 'Samsung', 'FC:42:03': 'Samsung', 'FC:8F:90': 'Samsung',
-            'FC:A1:3E': 'Samsung', 'FC:C7:34': 'Samsung', 'FC:F1:36': 'Samsung'
-        }
-        
-        mac_prefix = mac[:8].upper()
-        for prefix, manufacturer in android_prefixes.items():
-            if mac_prefix.startswith(prefix.upper()):
-                return f"{manufacturer} Device"
-        return None
+            try:
+                # If all else fails, try to get the hostname from ARP cache
+                result = subprocess.run(['arp', '-a', ip], capture_output=True, text=True, timeout=1)
+                arp_output = result.stdout.strip()
+                if arp_output:
+                    return "Unknown Device"
+            except subprocess.SubprocessError:
+                pass
+            
+            # If all methods fail, return a generic name with the IP
+            return "Unknown Device"
 
     def update_device_list(self):
-        # Clear existing rows
-        while True:
-            row = self.device_group.get_first_child()
-            if row is None:
-                break
-            if isinstance(row, Adw.ActionRow):
-                self.device_group.remove(row)
-            else:
-                break  # Stop if we encounter a non-ActionRow child
-
-        seen_ips = set()
-        for device in self.devices:
-            if device['ip'] not in seen_ips:
-                seen_ips.add(device['ip'])
-                row = Adw.ActionRow(title=device['ip'], subtitle=f"{device['mac']} - {device.get('hostname', 'Unknown')}")
-                row.add_css_class('body')
-                check = Gtk.CheckButton()
-                check.set_active(device.get('spoof', False))
-                check.connect("toggled", self.on_device_check_toggled, device)
-                row.add_prefix(check)
-                self.device_group.add(row)
-
-        # Show or hide the "Check All" checkbox based on whether there are devices
-        self.check_all_box.set_visible(len(self.devices) > 0)
-
-        self.update_check_all_button()
-
-    def on_device_check_toggled(self, check, device):
-        device['spoof'] = check.get_active()
-        self.log_message(f"Device {device['ip']} spoofing set to {device['spoof']}")
-        self.update_check_all_button()
-
-    def on_check_all_toggled(self, button):
-        active = button.get_active()
-        for row in self.device_group:
-            if isinstance(row, Adw.ActionRow):
-                check = row.get_first_child()
-                if isinstance(check, Gtk.CheckButton):
-                    check.set_active(active)
+        existing_devices = {}
         
-        # Update all devices in self.devices
+        # First, gather all existing devices
+        for row in self.device_group:
+            if isinstance(row, Adw.ExpanderRow):
+                ip = row.get_title()
+                existing_devices[ip] = row
+
+        # Update existing devices and add new ones
+        for device in self.devices:
+            icon_name = self.get_device_icon(device)
+            
+            if device['ip'] in existing_devices:
+                # Update existing device
+                expander_row = existing_devices[device['ip']]
+                expander_row.set_subtitle(device.get('hostname', 'Unknown'))
+                
+                # Update icon
+                icon = expander_row.get_prefix()
+                if isinstance(icon, Gtk.Image):
+                    icon.set_from_icon_name(icon_name)
+                
+                # Update MAC address
+                mac_row = expander_row.get_row_at_index(0)
+                mac_row.set_subtitle(device['mac'])
+                
+                # Update hostname
+                hostname_row = expander_row.get_row_at_index(1)
+                hostname_row.set_subtitle(device.get('hostname', 'Unknown'))
+                
+                # Update switch state
+                switch = expander_row.get_action_widgets()[0]
+                if isinstance(switch, Gtk.Switch):
+                    switch.set_active(device.get('spoof', False))
+            else:
+                # Add new device
+                expander_row = Adw.ExpanderRow(title=device['ip'], subtitle=device.get('hostname', 'Unknown'))
+                expander_row.add_prefix(Gtk.Image.new_from_icon_name(icon_name))
+                
+                switch = Gtk.Switch()
+                switch.set_active(device.get('spoof', False))
+                switch.connect("notify::active", self.on_device_switch_toggled, device)
+                switch.set_valign(Gtk.Align.CENTER)
+                expander_row.add_action(switch)
+
+                mac_row = Adw.ActionRow(title="MAC Address", subtitle=device['mac'])
+                expander_row.add_row(mac_row)
+
+                hostname_row = Adw.ActionRow(title="Hostname", subtitle=device.get('hostname', 'Unknown'))
+                expander_row.add_row(hostname_row)
+
+                self.device_group.add(expander_row)
+            
+            # Mark this device as processed
+            existing_devices[device['ip']] = None
+
+        # Remove devices that no longer exist
+        for ip, row in existing_devices.items():
+            if row is not None:
+                self.device_group.remove(row)
+
+        self.update_select_all_switch()
+
+    def get_device_icon(self, device):
+        hostname = device.get('hostname', '').lower()
+        ip = device['ip']
+        
+        if ip == self.gateway_ip:
+            return "network-server-symbolic"
+        elif 'phone' in hostname or 'android' in hostname or 'iphone' in hostname:
+            return "phone-symbolic"
+        elif 'laptop' in hostname or 'notebook' in hostname:
+            return "computer-laptop-symbolic"
+        elif 'desktop' in hostname or 'pc' in hostname:
+            return "computer-symbolic"
+        elif 'tablet' in hostname or 'ipad' in hostname:
+            return "tablet-symbolic"
+        elif 'tv' in hostname or 'television' in hostname:
+            return "tv-symbolic"
+        elif 'printer' in hostname:
+            return "printer-symbolic"
+        elif 'camera' in hostname:
+            return "camera-symbolic"
+        elif 'nas' in hostname or 'storage' in hostname:
+            return "drive-harddisk-symbolic"
+        else:
+            return "network-wired-symbolic"  # Default icon for unknown devices
+
+    def update_select_all_switch(self):
+        all_active = all(device.get('spoof', False) for device in self.devices)
+        any_active = any(device.get('spoof', False) for device in self.devices)
+        
+        self.select_all_switch.handler_block_by_func(self.on_select_all_toggled)
+        if all_active:
+            self.select_all_switch.set_active(True)
+        elif not any_active:
+            self.select_all_switch.set_active(False)
+        else:
+            # If some but not all devices are active, set the switch to an intermediate state
+            # We can't use the inconsistent state, so we'll just set it to active
+            self.select_all_switch.set_active(True)
+        self.select_all_switch.handler_unblock_by_func(self.on_select_all_toggled)
+
+    def on_select_all_toggled(self, switch, _pspec):
+        active = switch.get_active()
+        for row in self.device_group:
+            if isinstance(row, Adw.ExpanderRow):
+                device_switch = row.get_action_widgets()[0]
+                if isinstance(device_switch, Gtk.Switch):
+                    device_switch.set_active(active)
+        
         for device in self.devices:
             device['spoof'] = active
         
         self.log_message(f"All devices set to {'spoof' if active else 'not spoof'}")
 
-    def update_check_all_button(self):
-        all_checked = all(device.get('spoof', False) for device in self.devices)
-        any_checked = any(device.get('spoof', False) for device in self.devices)
-        
-        self.check_all_button.handler_block_by_func(self.on_check_all_toggled)
-        self.check_all_button.set_active(all_checked)
-        self.check_all_button.set_inconsistent(any_checked and not all_checked)
-        self.check_all_button.handler_unblock_by_func(self.on_check_all_toggled)
+    def on_device_switch_toggled(self, switch, _pspec, device):
+        device['spoof'] = switch.get_active()
+        self.log_message(f"Device {device['ip']} spoofing set to {device['spoof']}")
+        self.update_select_all_switch()
 
     def on_spoof_clicked(self, button):
         if not self.is_spoofing:
@@ -560,22 +553,6 @@ class NetworkTool(Adw.Application):
             self.log_message("Network restored to normal state.")
         except Exception as e:
             self.log_message(f"Error restoring network: {str(e)}", logging.ERROR)
-
-    def update_devices_list(self, new_devices):
-        # Create a dictionary of existing devices with IP as the key
-        existing_devices = {device['ip']: device for device in self.devices}
-        
-        # Update existing devices and add new ones
-        for new_device in new_devices:
-            if new_device['ip'] in existing_devices:
-                # Update existing device
-                existing_devices[new_device['ip']].update(new_device)
-            else:
-                # Add new device
-                existing_devices[new_device['ip']] = new_device
-        
-        # Convert the dictionary back to a list
-        self.devices = list(existing_devices.values())
 
 if __name__ == "__main__":
     app = NetworkTool()
