@@ -14,6 +14,7 @@ import logging
 from datetime import datetime
 import concurrent.futures
 import socket
+import queue
 
 class NetworkTool(Adw.Application):
     def __init__(self):
@@ -21,18 +22,23 @@ class NetworkTool(Adw.Application):
         self.connect('activate', self.on_activate)
         self.is_scanning = False
         self.is_spoofing = False
-        self.devices = []
+        self.devices = {}  # Store devices as a dictionary with IP as key
+        self.device_rows = {}  # Store GUI rows for each device
         self.setup_logging()
         self.network = self.get_local_network()
         self.gateway_ip = self.get_default_gateway()
         self.log_message(f"Network set to: {self.network}", logging.DEBUG)
         self.log_message(f"Gateway IP set to: {self.gateway_ip}", logging.DEBUG)
-        self.thread_count = 30
+        self.thread_count = 80
         self.original_thread_count = self.thread_count
+        self.detected_ips = set()
+        self.scan_queue = queue.Queue()
+        self.result_queue = queue.Queue()  # New queue for scan results
+        self.scan_thread = None
 
     def setup_logging(self):
         self.logger = logging.getLogger('NetworkTool')
-        self.logger.setLevel(logging.INFO)
+        self.logger.setLevel(logging.DEBUG)  # Set to DEBUG for more verbose output
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
         
         # Console handler
@@ -134,11 +140,17 @@ class NetworkTool(Adw.Application):
         about_button.connect("clicked", self.on_about_clicked)
         popover_box.append(about_button)
 
+        # Create a scrolled window for the entire content
+        content_scroll = Gtk.ScrolledWindow()
+        content_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        content_scroll.set_vexpand(True)
+        main_box.append(content_scroll)
+
         # Create a content area with Clamp
         content_clamp = Adw.Clamp()
         content_clamp.set_maximum_size(800)
         content_clamp.set_tightening_threshold(600)
-        main_box.append(content_clamp)
+        content_scroll.set_child(content_clamp)
 
         self.content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24, margin_top=24, margin_bottom=24, margin_start=12, margin_end=12)
         content_clamp.set_child(self.content_box)
@@ -157,21 +169,19 @@ class NetworkTool(Adw.Application):
         self.update_network_label()
 
         # Device list
-        self.device_group = Adw.PreferencesGroup()
-        self.content_box.append(self.device_group)
+        device_list_box = Adw.PreferencesGroup()
+        self.content_box.append(device_list_box)
 
-        # Add header buttons
-        self.header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        
-        self.select_all_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        # Add header with "Select All" switch
+        self.select_all_row = Adw.ActionRow(title="Select All")
         self.select_all_switch = Gtk.Switch()
         self.select_all_switch.set_valign(Gtk.Align.CENTER)
         self.select_all_switch.connect("notify::active", self.on_select_all_toggled)
-        self.select_all_box.append(Gtk.Label(label="Select All"))
-        self.select_all_box.append(self.select_all_switch)
-        self.header_box.append(self.select_all_box)
+        self.select_all_row.add_suffix(self.select_all_switch)
+        device_list_box.add(self.select_all_row)
 
-        self.device_group.set_header_suffix(self.header_box)
+        # Device group for individual device rows
+        self.device_group = device_list_box
 
         # Loading spinner
         self.spinner = Gtk.Spinner()
@@ -195,8 +205,84 @@ class NetworkTool(Adw.Application):
 
         self.window.present()
 
-        # Start initial scan
-        self.start_scan()
+        # Start the scanning thread
+        self.start_scan_thread()
+
+        # Automatically start a full scan when the app launches
+        self.start_initial_scan()
+
+    def start_scan_thread(self):
+        self.scan_thread = threading.Thread(target=self.scan_worker, daemon=True)
+        self.scan_thread.start()
+
+    def start_initial_scan(self):
+        self.is_scanning = True
+        self.refresh_button.set_sensitive(False)
+        self.spinner.start()
+        self.log_message("Starting initial full scan", logging.DEBUG)
+        self.scan_queue.put("full")
+        threading.Thread(target=self.wait_for_scan_completion, daemon=True).start()
+
+    def scan_worker(self):
+        while True:
+            scan_type = self.scan_queue.get()
+            if scan_type == "full":
+                new_devices = self.perform_full_scan()
+            elif scan_type == "quick":
+                new_devices = self.perform_quick_scan()
+            self.result_queue.put(new_devices)  # Put the result in the result queue
+            self.scan_queue.task_done()
+
+    def wait_for_scan_completion(self):
+        self.scan_queue.join()  # Wait for the scan to complete
+        new_devices = self.result_queue.get()  # Get the result from the result queue
+        GLib.idle_add(self.on_scan_completed, new_devices)
+
+    def on_scan_completed(self, new_devices):
+        self.is_scanning = False
+        self.refresh_button.set_sensitive(True)
+        self.spinner.stop()
+        self.log_message("Scan completed", logging.DEBUG)
+        self.update_device_list(new_devices)
+
+    def perform_full_scan(self):
+        self.log_message("Performing full network scan", logging.DEBUG)
+        new_devices = {}
+        self.devices.clear()  # Clear existing devices for a full scan
+        self.detected_ips = set()
+
+        self.arp_scan(new_devices, set())
+        self.ping_scan(new_devices, set())
+
+        self.devices.update(new_devices)
+        self.log_message(f"Full scan completed. Found {len(new_devices)} devices.", logging.DEBUG)
+        return new_devices
+
+    def on_refresh_clicked(self, button):
+        if not self.is_scanning:
+            self.is_scanning = True
+            self.refresh_button.set_sensitive(False)
+            self.spinner.start()
+            self.log_message("Starting quick refresh scan", logging.DEBUG)
+            self.scan_queue.put("quick")
+            threading.Thread(target=self.wait_for_scan_completion, daemon=True).start()
+
+    def perform_quick_scan(self):
+        new_devices = {}
+        existing_ips = set(self.devices.keys())
+        self.detected_ips = existing_ips.copy()
+
+        self.arp_scan(new_devices, existing_ips)
+        if not new_devices:
+            self.ping_scan(new_devices, existing_ips)
+
+        # Update the devices dictionary with only new devices
+        for ip, device in new_devices.items():
+            if ip not in self.devices:
+                self.devices[ip] = device
+
+        self.log_message(f"Quick scan completed. Found {len(new_devices)} new devices.", logging.DEBUG)
+        return new_devices
 
     def update_network_label(self):
         self.network_row.set_subtitle(self.network)
@@ -219,7 +305,7 @@ class NetworkTool(Adw.Application):
 
         about_dialog.set_program_name("Network Tool")
         about_dialog.set_version("1.0")
-        about_dialog.set_copyright("© 2023 Your Name")
+        about_dialog.set_copyright(" 2023 Your Name")
         about_dialog.set_comments("A network scanning and ARP spoofing tool.")
         about_dialog.set_website("https://example.com")
         about_dialog.set_website_label("Website")
@@ -234,53 +320,7 @@ class NetworkTool(Adw.Application):
     def on_about_dialog_close(self, dialog):
         dialog.destroy()
 
-    def on_refresh_clicked(self, button):
-        # Update network and gateway information
-        self.network = self.get_local_network()
-        self.gateway_ip = self.get_default_gateway()
-        
-        # Update the network label
-        GLib.idle_add(self.update_network_label)
-        
-        # Start the scan
-        self.start_scan()
-
-    def start_scan(self):
-        if not self.is_scanning and self.network:
-            self.is_scanning = True
-            self.spinner.start()
-            self.log_message("Scanning network...")
-            self.select_all_box.set_visible(False)  # Hide select all button during scanning
-            threading.Thread(target=self.scan_network, daemon=True).start()
-        elif not self.network:
-            self.log_message("No network detected. Unable to scan.", logging.ERROR)
-
-    def scan_network(self):
-        try:
-            new_devices = []
-            # First, try ARP scan
-            self.arp_scan(new_devices)
-            
-            # If ARP scan didn't find any devices, try ping scan
-            if not new_devices:
-                self.log_message("ARP scan found no devices. Trying ping scan...", logging.DEBUG)
-                self.ping_scan(new_devices)
-
-            # Update self.devices with only the new devices found
-            self.devices = new_devices
-
-            # Update UI on the main thread
-            GLib.idle_add(self.update_device_list)
-        except Exception as e:
-            self.log_message(f"Error during network scan: {str(e)}", logging.ERROR)
-        finally:
-            self.log_message(f"Scan completed. Found {len(self.devices)} devices.")
-            self.is_scanning = False
-            GLib.idle_add(self.spinner.stop)
-            GLib.idle_add(self.select_all_box.set_visible, True)  # Show select all button after scanning
-
-    
-    def arp_scan(self, devices):
+    def arp_scan(self, new_devices, existing_ips):
         try:
             self.log_message(f"Starting ARP scan on network: {self.network}", logging.DEBUG)
             arp_request = scapy.ARP(pdst=self.network)
@@ -289,25 +329,32 @@ class NetworkTool(Adw.Application):
             answered_list = scapy.srp(arp_request_broadcast, timeout=3, verbose=False)[0]
             
             for element in answered_list:
-                devices.append({'ip': element[1].psrc, 'mac': element[1].hwsrc})
-            self.log_message(f"ARP scan completed. Found {len(devices)} devices.")
+                ip = element[1].psrc
+                if ip not in existing_ips and ip not in self.detected_ips:
+                    new_devices[ip] = {'ip': ip, 'mac': element[1].hwsrc}
+                    self.detected_ips.add(ip)  # Add IP to the set
+                    self.log_message(f"ARP scan: New device found - IP: {ip}, MAC: {element[1].hwsrc}", logging.DEBUG)
+                else:
+                    self.log_message(f"ARP scan: Existing device - IP: {ip}", logging.DEBUG)
+            self.log_message(f"ARP scan completed. Found {len(new_devices)} new devices.")
         except Exception as e:
             self.log_message(f"ARP scan error: {e}", logging.ERROR)
 
-    def ping_scan(self, devices):
+    def ping_scan(self, new_devices, existing_ips):
         try:
             self.log_message(f"Starting ping scan on network: {self.network}", logging.DEBUG)
             network = ipaddress.ip_network(self.network, strict=False)
-            ip_list = list(network.hosts())
+            ip_list = [str(ip) for ip in network.hosts() if str(ip) not in existing_ips and str(ip) not in self.detected_ips]
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.thread_count) as executor:
-                futures = [executor.submit(self.ping_and_get_mac, str(ip)) for ip in ip_list]
+                futures = [executor.submit(self.ping_and_get_mac, ip) for ip in ip_list]
                 for future in concurrent.futures.as_completed(futures):
                     result = future.result()
                     if result:
-                        devices.append(result)
+                        new_devices[result['ip']] = result
+                        self.detected_ips.add(result['ip'])  # Add IP to the set
             
-            self.log_message(f"Ping scan completed. Found {len(devices)} devices.")
+            self.log_message(f"Ping scan completed. Found {len(new_devices)} new devices.")
         except Exception as e:
             self.log_message(f"Ping scan error: {e}", logging.ERROR)
 
@@ -329,10 +376,10 @@ class NetworkTool(Adw.Application):
             self.log_message(f"Getting MAC address for {ip}", logging.DEBUG)
             result = subprocess.run(['arp', '-n', ip], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             mac = re.search(r"(([a-f\d]{1,2}\:){5}[a-f\d]{1,2})", result.stdout)
-            return mac.group(0) if mac else "Unknown"
+            return mac.group(0) if mac else "Unknown MAC Address"
         except Exception as e:
             self.log_message(f"Error getting MAC address for {ip}: {e}", logging.ERROR)
-            return "Unknown"
+            return "Unknown MAC Address"
 
     def get_hostname(self, ip):
         try:
@@ -371,69 +418,51 @@ class NetworkTool(Adw.Application):
             # If all methods fail, return a generic name with the IP
             return "Unknown Device"
 
-    def update_device_list(self):
-        existing_devices = {}
+    def update_device_list(self, new_devices):
+        self.log_message("Updating device list in GUI", logging.DEBUG)
+        self.log_message(f"New devices: {new_devices}", logging.DEBUG)
         
-        # First, gather all existing devices
-        for row in self.device_group:
-            if isinstance(row, Adw.ExpanderRow):
-                ip = row.get_title()
-                existing_devices[ip] = row
+        if not isinstance(new_devices, dict):
+            self.log_message(f"Error: new_devices is not a dictionary. Type: {type(new_devices)}", logging.ERROR)
+            return
 
-        # Update existing devices and add new ones
-        for device in self.devices:
-            icon_name = self.get_device_icon(device)
-            
-            if device['ip'] in existing_devices:
-                # Update existing device
-                expander_row = existing_devices[device['ip']]
-                expander_row.set_subtitle(device.get('hostname', 'Unknown'))
-                
-                # Update icon
-                icon = expander_row.get_prefix()
-                if isinstance(icon, Gtk.Image):
-                    icon.set_from_icon_name(icon_name)
-                
-                # Update MAC address
-                mac_row = expander_row.get_row_at_index(0)
-                mac_row.set_subtitle(device['mac'])
-                
-                # Update hostname
-                hostname_row = expander_row.get_row_at_index(1)
-                hostname_row.set_subtitle(device.get('hostname', 'Unknown'))
-                
-                # Update switch state
-                switch = expander_row.get_action_widgets()[0]
-                if isinstance(switch, Gtk.Switch):
-                    switch.set_active(device.get('spoof', False))
+        # Remove rows for devices that no longer exist
+        for ip in list(self.device_rows.keys()):
+            if ip not in self.devices:
+                self.device_group.remove(self.device_rows[ip])
+                del self.device_rows[ip]
+        
+        # Add or update rows for new devices
+        new_rows_added = 0
+        for ip, device in new_devices.items():
+            if ip in self.device_rows:
+                # Update existing row
+                row = self.device_rows[ip]
+                row.set_subtitle(f"{device['mac']} - {device.get('hostname', 'Unknown')}")
             else:
-                # Add new device
-                expander_row = Adw.ExpanderRow(title=device['ip'], subtitle=device.get('hostname', 'Unknown'))
-                expander_row.add_prefix(Gtk.Image.new_from_icon_name(icon_name))
-                
-                switch = Gtk.Switch()
-                switch.set_active(device.get('spoof', False))
-                switch.connect("notify::active", self.on_device_switch_toggled, device)
-                switch.set_valign(Gtk.Align.CENTER)
-                expander_row.add_action(switch)
-
-                mac_row = Adw.ActionRow(title="MAC Address", subtitle=device['mac'])
-                expander_row.add_row(mac_row)
-
-                hostname_row = Adw.ActionRow(title="Hostname", subtitle=device.get('hostname', 'Unknown'))
-                expander_row.add_row(hostname_row)
-
-                self.device_group.add(expander_row)
-            
-            # Mark this device as processed
-            existing_devices[device['ip']] = None
-
-        # Remove devices that no longer exist
-        for ip, row in existing_devices.items():
-            if row is not None:
-                self.device_group.remove(row)
-
+                # Add new row
+                row = self.add_device_row(device)
+                self.device_rows[ip] = row
+                new_rows_added += 1
+        
         self.update_select_all_switch()
+        self.log_message(f"Device list update in GUI completed. New rows added: {new_rows_added}", logging.DEBUG)
+
+    def add_device_row(self, device):
+        self.log_message(f"Adding device row for IP: {device['ip']}", logging.DEBUG)
+        icon_name = self.get_device_icon(device)
+        row = Adw.ActionRow(title=device['ip'], subtitle=f"{device['mac']} - {device.get('hostname', 'Unknown')}")
+        row.add_prefix(Gtk.Image.new_from_icon_name(icon_name))
+        
+        switch = Gtk.Switch()
+        switch.set_active(device.get('spoof', False))
+        switch.connect("notify::active", self.on_device_switch_toggled, device)
+        switch.set_valign(Gtk.Align.CENTER)
+        row.add_suffix(switch)
+
+        self.device_group.add(row)
+        self.log_message(f"Device row added for IP: {device['ip']}", logging.DEBUG)
+        return row
 
     def get_device_icon(self, device):
         hostname = device.get('hostname', '').lower()
@@ -461,8 +490,8 @@ class NetworkTool(Adw.Application):
             return "network-wired-symbolic"  # Default icon for unknown devices
 
     def update_select_all_switch(self):
-        all_active = all(device.get('spoof', False) for device in self.devices)
-        any_active = any(device.get('spoof', False) for device in self.devices)
+        all_active = all(device.get('spoof', False) for device in self.devices.values())
+        any_active = any(device.get('spoof', False) for device in self.devices.values())
         
         self.select_all_switch.handler_block_by_func(self.on_select_all_toggled)
         if all_active:
@@ -478,12 +507,12 @@ class NetworkTool(Adw.Application):
     def on_select_all_toggled(self, switch, _pspec):
         active = switch.get_active()
         for row in self.device_group:
-            if isinstance(row, Adw.ExpanderRow):
-                device_switch = row.get_action_widgets()[0]
+            if isinstance(row, Adw.ActionRow) and row != self.select_all_row:
+                device_switch = row.get_suffix()
                 if isinstance(device_switch, Gtk.Switch):
                     device_switch.set_active(active)
         
-        for device in self.devices:
+        for device in self.devices.values():
             device['spoof'] = active
         
         self.log_message(f"All devices set to {'spoof' if active else 'not spoof'}")
@@ -524,7 +553,7 @@ class NetworkTool(Adw.Application):
             self.log_message(f"Gateway MAC: {gateway_mac}")
             
             while self.is_spoofing:
-                for device in self.devices:
+                for device in self.devices.values():
                     if device.get('spoof', False):
                         target_ip = device['ip']
                         target_mac = device['mac']
@@ -542,7 +571,7 @@ class NetworkTool(Adw.Application):
     def restore_network(self):
         try:
             gateway_mac = self.get_mac(self.gateway_ip)
-            for device in self.devices:
+            for device in self.devices.values():
                 if device.get('spoof', False):
                     target_ip = device['ip']
                     target_mac = device['mac']
